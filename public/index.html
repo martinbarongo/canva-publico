@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Canvas compartido</title>
+<style>
+:root{--bg:#f2f2f5;--fg:#1b1b1f;--bar:#fff;--bd:#d8d8e0;--ac:#2f6fed;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#17171a;--fg:#eee;--bar:#26262b;--bd:#3a3a42}}
+:root[data-theme="dark"]{--bg:#17171a;--fg:#eee;--bar:#26262b;--bd:#3a3a42}
+[hidden]{display:none!important}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font:14px system-ui,sans-serif;display:flex;flex-direction:column;overflow:hidden}
+#top{display:flex;gap:8px;align-items:center;justify-content:space-between;padding:6px 10px;background:var(--bar);border-bottom:1px solid var(--bd)}
+#msg{color:var(--ac);text-align:right}
+#stage{flex:1;min-height:0;display:flex;align-items:center;justify-content:center}
+canvas{cursor:crosshair;background:#fff;touch-action:none;box-shadow:0 1px 6px #0003}
+#bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;justify-content:center;padding:8px;background:var(--bar);border-top:1px solid var(--bd)}
+button{font:inherit;padding:8px 10px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);color:var(--fg);cursor:pointer}
+button.on{background:var(--ac);color:#fff;border-color:var(--ac)}
+input[type=color]{width:38px;height:36px;padding:0;border:1px solid var(--bd);border-radius:8px}
+#ov,#qrov{position:fixed;inset:0;background:#000a;display:flex;align-items:center;justify-content:center;z-index:9}
+#ov>div,#qrov>div{background:var(--bar);padding:20px;border-radius:12px;display:flex;flex-direction:column;gap:10px;width:min(320px,80%)}
+#ov input{font:inherit;padding:10px;border-radius:8px;border:1px solid var(--bd);background:var(--bg);color:var(--fg)}
+</style></head><body>
+<div id="top"><span><b id="who"></b> <a href="#" id="chg">cambiar</a></span><span id="msg">Conectando…</span></div>
+<div id="stage"><canvas id="cv"></canvas></div>
+<div id="bar">
+<input type="color" id="col" value="#111111">
+<input type="range" id="sz" min="2" max="40" value="6">
+<button id="photo">📷 Foto</button><input type="file" id="file" accept="image/*" hidden>
+<button id="undo">↩ Deshacer</button>
+<button id="nm" class="on">🏷 Nombres</button>
+<button id="adm" hidden>🔑 Admin</button>
+<button id="qrb" hidden>📱 QR</button>
+<button id="del" hidden>🗑 Borrar</button>
+<button id="clr" hidden>Limpiar todo</button>
+</div>
+<div id="ov" hidden><div><b>¿Cómo te llamas?</b><input id="nin" maxlength="24" placeholder="Tu nombre"><button id="go">Entrar</button></div></div>
+<div id="qrov" hidden><div style="align-items:center;text-align:center"><b>Escanea para entrar</b><div id="qr" style="background:#fff;padding:10px;border-radius:8px;line-height:0"></div><small id="qrurl" style="word-break:break-all"></small><button id="qrx">Cerrar</button></div></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+<script>
+const W=1200,H=1200,$=id=>document.getElementById(id),cv=$('cv'),ctx=cv.getContext('2d');
+let items=[],urls=[],uid='',name='',color='#111111',size=6,showNames=true,mode='draw',pending=null,cur=null,scale=1,raf=0;
+const rid=()=>Math.random().toString(36).slice(2,10)+Date.now().toString(36);
+try{uid=localStorage.getItem('cv-uid')||'';if(!uid){uid=rid();localStorage.setItem('cv-uid',uid)}name=localStorage.getItem('cv-name')||''}catch(e){uid=uid||rid()}
+const say=t=>$('msg').textContent=t||'';
+let key='';try{key=localStorage.getItem('cv-key')||''}catch(e){}
+const post=(p,b)=>fetch('/api/'+p,{method:'POST',headers:{'Content-Type':'application/json','x-admin-key':key},body:JSON.stringify(b)}).then(r=>{if(!r.ok)throw r.status});
+const setName=()=>$('who').textContent=name;
+const ask=()=>{$('nin').value=name;$('ov').hidden=false;$('nin').focus()};
+$('go').onclick=()=>{const v=$('nin').value.trim().slice(0,24);if(!v)return;name=v;try{localStorage.setItem('cv-name',v)}catch(e){}setName();$('ov').hidden=true};
+$('nin').onkeydown=e=>{if(e.key==='Enter')$('go').click()};
+$('chg').onclick=e=>{e.preventDefault();ask()};
+setName();if(!name)ask();
+
+function fit(){const r=$('stage').getBoundingClientRect();scale=Math.min(r.width/W,r.height/H);const d=devicePixelRatio||1;cv.style.width=W*scale+'px';cv.style.height=H*scale+'px';cv.width=Math.round(W*scale*d);cv.height=Math.round(H*scale*d);draw()}
+new ResizeObserver(fit).observe($('stage'));
+const draw=()=>{cancelAnimationFrame(raf);raf=requestAnimationFrame(render)};
+const imgs=new Map();
+function getImg(it){if(!imgs.has(it.id)){const i=new Image();i.onload=draw;i.src=it.src;imgs.set(it.id,i)}return imgs.get(it.id)}
+function label(it){const p=it.type==='img'?[it.x-it.w/2,it.y-it.h/2]:it.pts[0];ctx.font='bold 15px system-ui';ctx.lineWidth=3;ctx.strokeStyle='#fff';ctx.fillStyle='#444';const t=it.name||'?';ctx.strokeText(t,p[0]+4,p[1]-6);ctx.fillText(t,p[0]+4,p[1]-6)}
+function render(){
+ const k=cv.width/W;ctx.setTransform(k,0,0,k,0,0);ctx.fillStyle='#fff';ctx.fillRect(0,0,W,H);ctx.lineCap=ctx.lineJoin='round';
+ for(const it of cur?[...items,cur]:items){
+  if(it.type==='img'){const im=getImg(it);if(im.complete&&im.naturalWidth)ctx.drawImage(im,it.x-it.w/2,it.y-it.h/2,it.w,it.h)}
+  else if(it.pts&&it.pts.length){const p=it.pts;ctx.strokeStyle=ctx.fillStyle=it.color;ctx.lineWidth=it.size;ctx.beginPath();
+   if(p.length===1){ctx.arc(p[0][0],p[0][1],it.size/2,0,7);ctx.fill()}else{ctx.moveTo(p[0][0],p[0][1]);for(let i=1;i<p.length;i++)ctx.lineTo(p[i][0],p[i][1]);ctx.stroke()}}
+ }
+ if(showNames)for(const it of items)if(it.type==='img'||(it.pts&&it.pts.length))label(it);
+}
+function add(o){const it={...o,id:rid(),name,uid};items.push(it);draw();post('add',it).catch(()=>{items=items.filter(i=>i.id!==it.id);draw();say('No se pudo guardar')})}
+function delItem(id){items=items.filter(i=>i.id!==id);draw();post('del',{id,uid}).catch(()=>{})}
+const pt=e=>{const r=cv.getBoundingClientRect();return[Math.round((e.clientX-r.left)/scale),Math.round((e.clientY-r.top)/scale)]};
+function hit(p){for(let i=items.length-1;i>=0;i--){const it=items[i];if(it.type==='img'){if(Math.abs(p[0]-it.x)<=it.w/2&&Math.abs(p[1]-it.y)<=it.h/2)return it}else if(it.pts&&it.pts.some(q=>Math.hypot(q[0]-p[0],q[1]-p[1])<it.size/2+14))return it}}
+cv.onpointerdown=e=>{
+ if(!name)return;e.preventDefault();const p=pt(e);
+ if(mode==='del'){const t=hit(p);if(t)delItem(t.id);return}
+ if(pending){add({type:'img',src:pending.src,x:p[0],y:p[1],w:pending.w,h:pending.h});pending=null;say('');return}
+ cv.setPointerCapture(e.pointerId);cur={type:'stroke',pts:[p],color,size};draw();
+};
+cv.onpointermove=e=>{if(!cur)return;const p=pt(e),l=cur.pts[cur.pts.length-1];if(Math.hypot(p[0]-l[0],p[1]-l[1])>2&&cur.pts.length<3000){cur.pts.push(p);draw()}};
+cv.onpointerup=cv.onpointercancel=()=>{if(!cur)return;const c=cur;cur=null;add(c)};
+
+$('col').oninput=e=>color=e.target.value;
+$('sz').oninput=e=>size=+e.target.value;
+$('nm').onclick=e=>{showNames=!showNames;e.target.classList.toggle('on',showNames);draw()};
+$('del').onclick=e=>{mode=mode==='del'?'draw':'del';e.target.classList.toggle('on',mode==='del');say(mode==='del'?'Toca un dibujo o foto para borrarlo':'')};
+$('clr').onclick=()=>{if(confirm('¿Borrar TODO el lienzo?'))post('clear',{})};
+$('undo').onclick=()=>{const m=[...items].reverse().find(i=>i.uid===uid);if(m)delItem(m.id)};
+$('photo').onclick=()=>$('file').click();
+$('file').onchange=e=>{const f=e.target.files[0];e.target.value='';handleFile(f)};
+addEventListener('paste',e=>{const f=[...(e.clipboardData?.files||[])].find(f=>f.type.startsWith('image/'));if(f)handleFile(f)});
+addEventListener('dragover',e=>e.preventDefault());
+addEventListener('drop',e=>{e.preventDefault();const f=e.dataTransfer?.files[0];if(f&&f.type.startsWith('image/'))handleFile(f)});
+addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key==='z'&&e.target.tagName!=='INPUT'){e.preventDefault();$('undo').click()}});
+async function handleFile(f){
+ if(!f||!name)return;
+ const bm=await createImageBitmap(f).catch(()=>null);if(!bm){say('No se pudo leer la foto');return}
+ const r=Math.min(1,480/Math.max(bm.width,bm.height)),c=document.createElement('canvas');c.width=Math.round(bm.width*r);c.height=Math.round(bm.height*r);
+ c.getContext('2d').drawImage(bm,0,0,c.width,c.height);
+ pending={src:c.toDataURL('image/jpeg',.6),w:320,h:Math.round(320*c.height/c.width)};say('Toca el lienzo para colocar la foto');
+}
+$('qrb').onclick=()=>{let ok=false;if(urls.length)try{const q=qrcode(0,'M');q.addData(urls[0]);q.make();$('qr').innerHTML=q.createSvgTag(7,0);ok=true}catch(e){}
+ $('qr').hidden=!ok;$('qrurl').textContent=urls.length?urls.join('  ·  '):'No encontré una red Wi-Fi activa en este PC';$('qrov').hidden=false};
+$('qrx').onclick=()=>$('qrov').hidden=true;
+
+$('adm').onclick=()=>{const k=prompt('Clave de administrador');if(k){try{localStorage.setItem('cv-key',k)}catch(e){}location.reload()}};
+const es=new EventSource('/events?key='+encodeURIComponent(key));
+es.addEventListener('init',e=>{const d=JSON.parse(e.data);items=d.items;urls=d.hosted?[location.origin]:(d.urls||[]);for(const b of['del','clr','qrb'])$(b).hidden=!d.admin;$('adm').hidden=!d.hosted||d.admin;say('');draw()});
+es.addEventListener('add',e=>{const it=JSON.parse(e.data);if(!items.some(i=>i.id===it.id)){items.push(it);draw()}});
+es.addEventListener('del',e=>{const d=JSON.parse(e.data);items=items.filter(i=>i.id!==d.id);draw()});
+es.addEventListener('clear',()=>{items=[];draw()});
+es.onerror=()=>say('Reconectando…');
+</script></body></html>
