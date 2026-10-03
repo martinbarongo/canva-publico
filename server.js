@@ -49,6 +49,13 @@ http.createServer(async(req,res)=>{
    }else if(op==='del'){
     const i=items.findIndex(x=>x.id===b.id);
     if(i>=0&&(isAdmin(req)||(b.uid&&items[i].uid===b.uid))){items.splice(i,1);send('del',{id:b.id});save()}
+   }else if(op==='update'){
+    const it=items.find(x=>x.id===b.id);
+    if(it&&it.type==='img'&&(isAdmin(req)||(b.uid&&it.uid===b.uid))){
+     const n=v=>Math.round(Math.min(Math.max(+v||0,0),1200));
+     it.x=n(b.x);it.y=n(b.y);it.w=Math.max(20,n(b.w));it.h=Math.max(20,n(b.h));
+     send('upd',{id:it.id,x:it.x,y:it.y,w:it.w,h:it.h});save();
+    }
    }else if(op==='clear'&&isAdmin(req)){items=[];send('clear',{});save()}
    res.writeHead(204);return res.end();
   }
